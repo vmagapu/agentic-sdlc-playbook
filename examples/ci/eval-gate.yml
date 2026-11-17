@@ -1,0 +1,59 @@
+# Eval gate for CI — working example using evalgate (github.com/vmagapu/evalgate)
+#
+# Wiring: your repo carries
+#   evals/cases.jsonl      — the case suite (grow it from every incident)
+#   evals/baseline.json    — committed scores from the last accepted run
+#   evals/run_evals.py     — builds your agent + judge, runs the suite, checks the gate
+#
+# The gate FAILS the build on: mean-score drop beyond tolerance, any per-tag
+# drop, or any case flipping pass -> fail (see playbook ch. 3).
+
+name: eval-gate
+on:
+  pull_request:
+    paths:          # bind the gate to the surfaces that change model behavior
+      - "prompts/**"
+      - "agents/**"
+      - "evals/**"
+      - "pyproject.toml"
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          pip install "git+https://github.com/vmagapu/evalgate"
+          pip install -e .
+
+      - name: Run eval suite against committed baseline
+        env:
+          # Judge/model credentials for LLM-judged suites; deterministic
+          # suites need none. Scope this key to evals only.
+          ANTHROPIC_API_KEY: ${{ secrets.EVALS_ANTHROPIC_API_KEY }}
+        run: python evals/run_evals.py --cases evals/cases.jsonl --baseline evals/baseline.json
+
+      # run_evals.py sketch:
+      #
+      #   report = run_suite(build_agent(), load_cases(args.cases), build_judge())
+      #   print(report.summary())
+      #   result = gate.check(report, gate.load_baseline(args.baseline))
+      #   print(result.summary())
+      #   report.save("evals/candidate.json")   # uploaded for review either way
+      #   raise SystemExit(0 if result.passed else 1)
+
+      - name: Upload candidate scores for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: evals/candidate.json
+
+# Baseline updates are deliberate, reviewed events — never automatic:
+# a PR that improves scores updates evals/baseline.json IN THAT PR, so the
+# diff of the baseline is reviewed next to the change that earned it.
